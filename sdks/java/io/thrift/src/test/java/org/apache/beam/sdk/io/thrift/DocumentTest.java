@@ -227,10 +227,8 @@ public class DocumentTest {
     document.addEnum(enumName, enumFields, emptyAnnotations);
 
     String enumNameActual = document.getDefinitions().get(0).getName();
-    //    int enumSizeActual = ((IntegerEnum) document.getDefinitions().get(0)).getFields().size();
 
     Assert.assertEquals(enumName, enumNameActual);
-    //    Assert.assertEquals(enumFields.size(), enumSizeActual);
     Assert.assertTrue(document.getDefinitions().get(0) instanceof IntegerEnum);
   }
 
@@ -248,10 +246,8 @@ public class DocumentTest {
     document.addSenum(senumName, senumFields);
 
     String senumNameActual = document.getDefinitions().get(0).getName();
-    //    int senumSizeActual = ((StringEnum) document.getDefinitions().get(0)).getValues().size();
 
     Assert.assertEquals(senumName, senumNameActual);
-    //    Assert.assertEquals(senumFields.size(), senumSizeActual);
     Assert.assertTrue(document.getDefinitions().get(0) instanceof StringEnum);
   }
 
@@ -283,10 +279,8 @@ public class DocumentTest {
     document.addStruct(structName, structFields, emptyAnnotations);
 
     String structNameActual = document.getDefinitions().get(0).getName();
-    //    int structSizeActual = ((Struct) document.getDefinitions().get(0)).getFields().size();
 
     Assert.assertEquals(structName, structNameActual);
-    //    Assert.assertEquals(structFields.size(), structSizeActual);
     Assert.assertTrue(document.getDefinitions().get(0) instanceof Struct);
   }
 
@@ -318,10 +312,8 @@ public class DocumentTest {
     document.addUnion(unionName, unionFields, emptyAnnotations);
 
     String unionNameActual = document.getDefinitions().get(0).getName();
-    //    int unionSizeActual = ((Union) document.getDefinitions().get(0)).getFields().size();
 
     Assert.assertEquals(unionName, unionNameActual);
-    //    Assert.assertEquals(unionFields.size(), unionSizeActual);
     Assert.assertTrue(document.getDefinitions().get(0) instanceof Union);
   }
 
@@ -353,11 +345,8 @@ public class DocumentTest {
     document.addThriftException(exceptionName, exceptionFields, emptyAnnotations);
 
     String exceptionNameActual = document.getDefinitions().get(0).getName();
-    //    int exceptionSizeActual =
-    //        ((ThriftException) document.getDefinitions().get(0)).getFields().size();
 
     Assert.assertEquals(exceptionName, exceptionNameActual);
-    //    Assert.assertEquals(exceptionFields.size(), exceptionSizeActual);
     Assert.assertTrue(document.getDefinitions().get(0) instanceof ThriftException);
   }
 
@@ -381,10 +370,8 @@ public class DocumentTest {
     document.addService(servicenName, null, serviceMethods, emptyAnnotations);
 
     String serviceNameActual = document.getDefinitions().get(0).getName();
-    //    int serviceSizeActual = ((Service) document.getDefinitions().get(0)).getMethods().size();
 
     Assert.assertEquals(servicenName, serviceNameActual);
-    //    Assert.assertEquals(serviceMethods.size(), serviceSizeActual);
     Assert.assertTrue(document.getDefinitions().get(0) instanceof Service);
   }
 }

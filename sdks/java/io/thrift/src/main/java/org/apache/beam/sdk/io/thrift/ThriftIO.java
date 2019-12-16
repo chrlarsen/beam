@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import javax.annotation.Nullable;
+import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.io.Compression;
 import org.apache.beam.sdk.io.FileIO;
@@ -123,8 +124,9 @@ import org.slf4j.LoggerFactory;
  * <p>This IO API is considered experimental and may break or receive backwards-incompatible changes
  * in future versions of the Apache Beam SDK.
  *
- * <p>NOTE: At this time retention of comments are not supported.
+ * <p>NOTE: At this time retention of comments in the .thrift file(s) are not supported.
  */
+@Experimental(Experimental.Kind.SOURCE_SINK)
 public class ThriftIO {
 
   private static final String DEFAULT_THRIFT_SUFFIX = ".thrift";
@@ -174,9 +176,9 @@ public class ThriftIO {
 
     /**
      * Returns a transform for reading Thrift files that reads from the file(s) with the given
-     * filename or filename pattern. This can be a local path (if running locally), or a Google
-     * Cloud Storage filename or filename pattern of the form {@code "gs://<bucket>/<filepath>"} (if
-     * running locally or using remote execution). Standard <a
+     * filename or filename pattern. This can be any path supported by {@link FileIO}, for example:
+     * a Google Cloud Storage filename or filename pattern of the form {@code
+     * "gs://<bucket>/<filepath>"} (if running locally or using remote execution). Standard <a
      * href="http://docs.oracle.com/javase/tutorial/essential/io/find.html" >Java Filesystem glob
      * patterns</a> ("*", "?", "[..]") are supported.
      */
@@ -262,9 +264,7 @@ public class ThriftIO {
         } catch (IOException ioe) {
 
           String filename = file.getMetadata().resourceId().toString();
-
           LOG.error(String.format("Error in reading file: %1$s%n%2$s", filename, ioe));
-
           throw new RuntimeException(ioe);
         }
       }
@@ -359,9 +359,9 @@ public class ThriftIO {
 
     /**
      * Returns a transform for writing Thrift files that writes to the file(s) with the given
-     * filename or filename pattern. This can be a local path (if running locally), or a Google
-     * Cloud Storage filename or filename pattern of the form {@code "gs://<bucket>/<filepath>"} (if
-     * running locally or using remote execution). Standard <a
+     * filename or filename pattern. This can be any path supported by {@link FileIO}, for example:
+     * a Google Cloud Storage filename or filename pattern of the form {@code
+     * "gs://<bucket>/<filepath>"} (if running locally or using remote execution). Standard <a
      * href="http://docs.oracle.com/javase/tutorial/essential/io/find.html">Java Filesystem
      * globpatterns</a> ("*", "?", "[..]") are supported.
      */
@@ -407,6 +407,8 @@ public class ThriftIO {
 
   /** Class to write Thrift {@link Document}. */
   private static class ThriftWriter implements Closeable {
+
+    private static final String COMMA_NEW_LINE = "," + System.lineSeparator();
 
     private transient OutputStream channel;
 
@@ -465,7 +467,8 @@ public class ThriftIO {
 
         if (definition instanceof Struct) {
           Struct struct = (Struct) definition;
-          String structFields = getStructFieldsString(struct.getFields(), ";\n", true);
+          String structFields =
+              getStructFieldsString(struct.getFields(), ";" + System.lineSeparator(), true);
           String structAnnotations = getAnnotationString(struct.getAnnotations());
           this.channel.write(
               String.format(
@@ -476,7 +479,8 @@ public class ThriftIO {
 
         if (definition instanceof ThriftException) {
           ThriftException thriftException = (ThriftException) definition;
-          String exceptionFields = getStructFieldsString(thriftException.getFields(), ",\n", true);
+          String exceptionFields =
+              getStructFieldsString(thriftException.getFields(), COMMA_NEW_LINE, true);
           String exceptionAnnotations = getAnnotationString(thriftException.getAnnotations());
           this.channel.write(
               String.format(
@@ -511,8 +515,9 @@ public class ThriftIO {
         String includeString =
             includes.stream()
                     .map(include -> format("include \"%s\"", include))
-                    .collect(joining("\n"))
-                + "\n\n";
+                    .collect(joining(System.lineSeparator()))
+                + System.lineSeparator()
+                + System.lineSeparator();
         this.channel.write(includeString.getBytes(Charset.defaultCharset()));
       }
     }
@@ -522,8 +527,9 @@ public class ThriftIO {
         String includeString =
             includes.stream()
                     .map(include -> format("cpp_include \"%s\"", include))
-                    .collect(joining("\n"))
-                + "\n\n";
+                    .collect(joining(System.lineSeparator()))
+                + System.lineSeparator()
+                + System.lineSeparator();
         this.channel.write(includeString.getBytes(Charset.defaultCharset()));
       }
     }
@@ -535,8 +541,9 @@ public class ThriftIO {
                     .map(
                         include ->
                             format("namespace %1$s %2$s", include.getKey(), include.getValue()))
-                    .collect(joining("\n"))
-                + "\n\n";
+                    .collect(joining(System.lineSeparator()))
+                + System.lineSeparator()
+                + System.lineSeparator();
         this.channel.write(includeString.getBytes(Charset.defaultCharset()));
       }
     }
@@ -605,18 +612,14 @@ public class ThriftIO {
           stringBuilder.append("  ").append(field.getName());
         }
 
-        // field.getAnnotations() returns null sometimes.
-        try {
-          if (!field.getAnnotations().isEmpty()) {
-            stringBuilder.append(getAnnotationString(field.getAnnotations()));
-          }
-        } catch (NullPointerException ignored) {
+        if (field.getAnnotations() != null && !field.getAnnotations().isEmpty()) {
+          stringBuilder.append(getAnnotationString(field.getAnnotations()));
         }
 
         integerEnumFieldList.add(stringBuilder.toString());
       }
 
-      return String.join(",\n", integerEnumFieldList);
+      return String.join(COMMA_NEW_LINE, integerEnumFieldList);
     }
 
     private String getStructFieldsString(
@@ -643,12 +646,8 @@ public class ThriftIO {
           stringBuilder.append(" = ").append(structField.getValue().get().getValueString());
         }
 
-        // field.getAnnotations() returns null sometimes.
-        try {
-          if (!structField.getAnnotations().isEmpty()) {
-            stringBuilder.append(getAnnotationString(structField.getAnnotations()));
-          }
-        } catch (NullPointerException ignored) {
+        if (structField.getAnnotations() != null && !structField.getAnnotations().isEmpty()) {
+          stringBuilder.append(getAnnotationString(structField.getAnnotations()));
         }
         structFieldList.add(stringBuilder.toString());
       }
@@ -664,7 +663,7 @@ public class ThriftIO {
         sEnumFieldList.add("  \"" + sEnumField + "\"");
       }
 
-      stringBuilder.append(String.join(",\n", sEnumFieldList));
+      stringBuilder.append(String.join(COMMA_NEW_LINE, sEnumFieldList));
 
       return stringBuilder.toString();
     }
@@ -702,7 +701,7 @@ public class ThriftIO {
         methodsList.add(stringBuilder.toString());
       }
 
-      return String.join(",\n", methodsList);
+      return String.join(COMMA_NEW_LINE, methodsList);
     }
   }
 }

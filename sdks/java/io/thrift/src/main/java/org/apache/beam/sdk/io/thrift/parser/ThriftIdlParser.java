@@ -58,7 +58,7 @@ public class ThriftIdlParser {
       try {
         Tree tree = (Tree) parser.document().getTree();
         if (parser.getNumberOfSyntaxErrors() > 0) {
-          LOG.error("Parsing generated " + parser.getNumberOfSyntaxErrors() + "errors.");
+          LOG.error("Parsing generated " + parser.getNumberOfSyntaxErrors() + " errors.");
           throw new RuntimeException("syntax error");
         }
         return tree;

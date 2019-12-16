@@ -378,6 +378,7 @@ public class Document implements Serializable {
     switch (baseType) {
       case STRING:
         return new ConstString((String) value);
+      case BYTE:
       case I64:
       case I32:
       case I16:
