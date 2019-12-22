@@ -109,9 +109,11 @@ public class ThriftIO {
   //////////////////////////////////////////////////////////////////////////////
 
   /** Creates a {@link Sink} for use with {@link FileIO#write} and {@link FileIO#writeDynamic}. */
-  public static Sink sink() {
-    return new AutoValue_ThriftIO_Sink.Builder().build();
+  public static <T> Sink<T> sink() {
+    return new AutoValue_ThriftIO_Sink.Builder<T>().build();
   }
+
+  //////////////////////////////////////////////////////////////////////////////
 
   /** Implementation of {@link #readFiles}. */
   @AutoValue
@@ -297,11 +299,13 @@ public class ThriftIO {
     }
   }
 
+  //////////////////////////////////////////////////////////////////////////////
+
   /** Implementation of {@link #sink}. */
   @AutoValue
   public abstract static class Sink<T> implements FileIO.Sink<T> {
 
-    abstract Builder toBuilder();
+    abstract Builder<T> toBuilder();
 
     @Override
     public void open(WritableByteChannel channel) throws IOException {
@@ -320,8 +324,8 @@ public class ThriftIO {
     }
 
     @AutoValue.Builder
-    abstract static class Builder {
-      abstract Sink build();
+    abstract static class Builder<T> {
+      abstract Sink<T> build();
     }
   }
 }

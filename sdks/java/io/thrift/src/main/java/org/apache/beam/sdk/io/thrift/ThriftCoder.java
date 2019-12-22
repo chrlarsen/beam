@@ -19,6 +19,8 @@ package org.apache.beam.sdk.io.thrift;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.io.OutputStream;
 import org.apache.beam.sdk.coders.CoderException;
 import org.apache.beam.sdk.coders.CustomCoder;
@@ -47,7 +49,11 @@ public class ThriftCoder<T> extends CustomCoder<T> {
    * @throws CoderException if the value could not be encoded for some reason
    */
   @Override
-  public void encode(T value, OutputStream outStream) throws CoderException, IOException {}
+  public void encode(T value, OutputStream outStream) throws CoderException, IOException {
+    ObjectOutputStream oos = new ObjectOutputStream(outStream);
+    oos.writeObject(value);
+    oos.flush();
+  }
 
   /**
    * Decodes a value of type {@code T} from the given input stream in the given context. Returns the
@@ -59,6 +65,13 @@ public class ThriftCoder<T> extends CustomCoder<T> {
    */
   @Override
   public T decode(InputStream inStream) throws CoderException, IOException {
-    return null;
+    try {
+
+      ObjectInputStream ois = new ObjectInputStream(inStream);
+      return (T) ois.readObject();
+    } catch (Exception classNotFoundException) {
+      throw new RuntimeException(
+          "Could not deserialize bytes to Document" + classNotFoundException);
+    }
   }
 }
