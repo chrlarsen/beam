@@ -19,17 +19,23 @@ package org.apache.beam.sdk.io.thrift;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
 import java.io.OutputStream;
 import org.apache.beam.sdk.coders.CoderException;
 import org.apache.beam.sdk.coders.CustomCoder;
-import org.apache.beam.sdk.io.thrift.parser.model.Document;
+import org.apache.thrift.protocol.TProtocolFactory;
 
-public class ThriftCoder extends CustomCoder<Document> {
+public class ThriftCoder<T> extends CustomCoder<T> {
 
-  public static ThriftCoder of() {
-    return new ThriftCoder();
+  private final Class<T> type;
+  private final TProtocolFactory proto;
+
+  public static <T> ThriftCoder<T> of(Class<T> clazz, TProtocolFactory proto) {
+    return new ThriftCoder<>(clazz, proto);
+  }
+
+  private ThriftCoder(Class<T> type, TProtocolFactory proto) {
+    this.type = type;
+    this.proto = proto;
   }
 
   /**
@@ -41,12 +47,7 @@ public class ThriftCoder extends CustomCoder<Document> {
    * @throws CoderException if the value could not be encoded for some reason
    */
   @Override
-  public void encode(Document value, OutputStream outStream) throws CoderException, IOException {
-
-    ObjectOutputStream oos = new ObjectOutputStream(outStream);
-    oos.writeObject(value);
-    oos.flush();
-  }
+  public void encode(T value, OutputStream outStream) throws CoderException, IOException {}
 
   /**
    * Decodes a value of type {@code T} from the given input stream in the given context. Returns the
@@ -55,21 +56,9 @@ public class ThriftCoder extends CustomCoder<Document> {
    * @param inStream
    * @throws IOException if reading from the {@code InputStream} fails for some reason
    * @throws CoderException if the value could not be decoded for some reason
-   * @return
    */
   @Override
-  public Document decode(InputStream inStream) throws CoderException, IOException {
-
-    try {
-
-      ObjectInputStream ois = new ObjectInputStream(inStream);
-      return (Document) ois.readObject();
-    } catch (Exception classNotFoundException) {
-      throw new RuntimeException(
-          "Could not deserialize bytes to Document" + classNotFoundException);
-    }
+  public T decode(InputStream inStream) throws CoderException, IOException {
+    return null;
   }
-
-  @Override
-  public void verifyDeterministic() throws NonDeterministicException {}
 }

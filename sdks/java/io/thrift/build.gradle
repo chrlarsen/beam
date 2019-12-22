@@ -18,24 +18,19 @@
 
 plugins {
     id 'org.apache.beam.module'
-    id 'antlr'
 }
 applyJavaNature(automaticModuleName: 'org.apache.beam.sdk.io.thrift')
 
 description = "Apache Beam :: SDKs :: Java :: IO :: Thrift"
-ext.summary = "IO to read and write Thrift files"
+ext.summary = "IO to read and write Thrift encoded data files"
 
 dependencies {
     compile library.java.vendored_guava_26_0_jre
     compile library.java.slf4j_api
-    antlr "org.antlr:antlr:3.5.2"
-    compile "org.antlr:antlr-runtime:3.5.2"
+    compile "org.apache.thrift:libthrift:0.13.0"
     compile project(path: ":sdks:java:core", configuration: "shadow")
     testCompile library.java.junit
     testRuntimeOnly library.java.slf4j_jdk14
     testRuntimeOnly project(":runners:direct-java")
 }
 
-generateGrammarSource {
-    outputDirectory = new File(buildDir.toString() + "/generated-src/antlr/main/org/apache/beam/sdk/io/thrift/parser/antlr")
-}

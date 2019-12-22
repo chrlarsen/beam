@@ -17,72 +17,40 @@
  */
 package org.apache.beam.sdk.io.thrift;
 
-import static java.lang.String.format;
-import static java.util.stream.Collectors.joining;
 import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions.checkNotNull;
 
 import com.google.auto.value.AutoValue;
-import java.io.Closeable;
 import java.io.IOException;
-import java.io.OutputStream;
-import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
-import java.nio.charset.Charset;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
 import javax.annotation.Nullable;
 import org.apache.beam.sdk.annotations.Experimental;
-import org.apache.beam.sdk.coders.StringUtf8Coder;
-import org.apache.beam.sdk.io.Compression;
+import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.io.FileIO;
-import org.apache.beam.sdk.io.thrift.parser.ThriftIdlParser;
-import org.apache.beam.sdk.io.thrift.parser.model.BaseType;
-import org.apache.beam.sdk.io.thrift.parser.model.Const;
-import org.apache.beam.sdk.io.thrift.parser.model.Definition;
-import org.apache.beam.sdk.io.thrift.parser.model.Document;
-import org.apache.beam.sdk.io.thrift.parser.model.Header;
-import org.apache.beam.sdk.io.thrift.parser.model.IdentifierType;
-import org.apache.beam.sdk.io.thrift.parser.model.IntegerEnum;
-import org.apache.beam.sdk.io.thrift.parser.model.IntegerEnumField;
-import org.apache.beam.sdk.io.thrift.parser.model.ListType;
-import org.apache.beam.sdk.io.thrift.parser.model.MapType;
-import org.apache.beam.sdk.io.thrift.parser.model.Service;
-import org.apache.beam.sdk.io.thrift.parser.model.StringEnum;
-import org.apache.beam.sdk.io.thrift.parser.model.Struct;
-import org.apache.beam.sdk.io.thrift.parser.model.ThriftException;
-import org.apache.beam.sdk.io.thrift.parser.model.ThriftField;
-import org.apache.beam.sdk.io.thrift.parser.model.ThriftMethod;
-import org.apache.beam.sdk.io.thrift.parser.model.ThriftType;
-import org.apache.beam.sdk.io.thrift.parser.model.TypeAnnotation;
-import org.apache.beam.sdk.io.thrift.parser.model.Typedef;
-import org.apache.beam.sdk.io.thrift.parser.model.VoidType;
 import org.apache.beam.sdk.options.ValueProvider;
 import org.apache.beam.sdk.options.ValueProvider.StaticValueProvider;
-import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.display.DisplayData;
-import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PDone;
-import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Charsets;
-import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.io.ByteSource;
+import org.apache.thrift.TBase;
+import org.apache.thrift.TDeserializer;
+import org.apache.thrift.protocol.TProtocolFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * {@link PTransform}s for reading and writing Thrift files.
+ * {@link PTransform}s for reading and writing files containing Thrift encoded data.
  *
  * <h3>Reading Thrift Files</h3>
  *
- * <p>For simple reading, use {@link ThriftIO#read} with the desired file pattern to read from.
+ * <p>For simple reading, use {@link ThriftIO#} with the desired file pattern to read from.
  *
  * <p>For example:
  *
  * <pre>{@code
- * PCollection<Document> documents = pipeline.apply(ThriftIO.read().from("/foo/bar/*"));
+ * PCollection<ExampleType> examples = pipeline.apply(ThriftIO.read().from("/foo/bar/*"));
  * ...
  * }</pre>
  *
@@ -96,25 +64,25 @@ import org.slf4j.LoggerFactory;
  *   .apply(FileIO.match().filepattern(options.getInputFilepattern())
  *   .apply(FileIO.readMatches());
  *
- * PCollection<Document> documents = files.apply(ThriftIO.readFiles());
+ * PCollection<ExampleType> examples = files.apply(ThriftIO.readFiles(ExampleType.class).withProtocol(thriftProto);
  * }</pre>
  *
  * <h3>Writing Thrift Files</h3>
  *
- * <p>{@link ThriftIO.Sink} allows for a {@link PCollection} of {@link Document} to be written to
+ * <p>{@link ThriftIO.Sink} allows for a {@link PCollection} of {@link byte[]} to be written to
  * Thrift files. It can be used with the general-purpose {@link FileIO} transforms with
  * FileIO.write/writeDynamic specifically.
  *
- * <p>By default, {@link ThriftIO.Sink} can write multiple {@link Document} to a file so it is
- * highly recommended to provide a unique name for each desired file.
+ * <p>By default, {@link ThriftIO.Sink} can write multiple {@link byte[]} to a file so it is highly
+ * recommended to provide a unique name for each desired file.
  *
  * <p>For example:
  *
  * <pre>{@code
  * pipeline
- *   .apply(...) // PCollection<Document>
+ *   .apply(...) // PCollection<byte[]>
  *   .apply(FileIO
- *     .<Document>write()
+ *     .<byte[]>write()
  *     .via(ThriftIO.sink()
  *     .to("destination/path")
  *     .withPrefix("unique_name")
@@ -123,13 +91,9 @@ import org.slf4j.LoggerFactory;
  *
  * <p>This IO API is considered experimental and may break or receive backwards-incompatible changes
  * in future versions of the Apache Beam SDK.
- *
- * <p>NOTE: At this time retention of comments in the .thrift file(s) are not supported.
  */
 @Experimental(Experimental.Kind.SOURCE_SINK)
 public class ThriftIO {
-
-  private static final String DEFAULT_THRIFT_SUFFIX = ".thrift";
 
   private static final Logger LOG = LoggerFactory.getLogger(ThriftIO.class);
 
@@ -137,91 +101,11 @@ public class ThriftIO {
   private ThriftIO() {}
 
   /**
-   * A {@link PTransform} that reads one or more Thrift files matching a pattern and returns a
-   * {@link PCollection} of {@link Document}.
-   */
-  public static Read read() {
-    return new AutoValue_ThriftIO_Read.Builder().setCompression(Compression.AUTO).build();
-  }
-
-  /**
    * Like {@link #read()},but reads each file in a {@link PCollection} of {@link
    * org.apache.beam.sdk.io.FileIO.ReadableFile}, which allows more flexible usage.
    */
-  public static ReadFiles readFiles() {
-    return new AutoValue_ThriftIO_ReadFiles.Builder().build();
-  }
-
-  //////////////////////////////////////////////////////////////////////////////
-
-  /** Implementation of {@link #read()}. */
-  @AutoValue
-  public abstract static class Read extends PTransform<PBegin, PCollection<Document>> {
-
-    @Nullable
-    abstract ValueProvider<String> getFilePattern();
-
-    abstract Compression getCompression();
-
-    abstract Builder toBuilder();
-
-    @AutoValue.Builder
-    abstract static class Builder {
-      abstract Builder setFilePattern(ValueProvider<String> filePattern);
-
-      abstract Builder setCompression(Compression compression);
-
-      abstract Read build();
-    }
-
-    /**
-     * Returns a transform for reading Thrift files that reads from the file(s) with the given
-     * filename or filename pattern. This can be any path supported by {@link FileIO}, for example:
-     * a Google Cloud Storage filename or filename pattern of the form {@code
-     * "gs://<bucket>/<filepath>"} (if running locally or using remote execution). Standard <a
-     * href="http://docs.oracle.com/javase/tutorial/essential/io/find.html" >Java Filesystem glob
-     * patterns</a> ("*", "?", "[..]") are supported.
-     */
-    public Read from(String filePattern) {
-      return from(StaticValueProvider.of(filePattern));
-    }
-
-    /** Same as {@code from(filepattern)}, but accepting a {@link ValueProvider}. */
-    public Read from(ValueProvider<String> filepattern) {
-      return toBuilder().setFilePattern(filepattern).build();
-    }
-
-    /**
-     * Returns a transform for reading Thrift files that decompresses all input files using the
-     * specified compression type.
-     *
-     * <p>If no compression type is specified, the default is {@link Compression#AUTO}. In this
-     * mode, the compression type of the file is determined by it's extension via {@link
-     * Compression#detect(String)}.
-     */
-    public Read withCompression(Compression compression) {
-      return toBuilder().setCompression(compression).build();
-    }
-
-    @Override
-    public PCollection<Document> expand(PBegin input) {
-
-      return input
-          .apply("Create filepattern", Create.ofProvider(getFilePattern(), StringUtf8Coder.of()))
-          .apply(FileIO.matchAll())
-          .apply(FileIO.readMatches())
-          .apply(readFiles());
-    }
-
-    @Override
-    public void populateDisplayData(DisplayData.Builder builder) {
-      super.populateDisplayData(builder);
-      builder.add(
-          DisplayData.item("filePattern", getFilePattern()).withLabel("Input File Pattern"));
-      builder.add(
-          DisplayData.item("compressionType", getCompression().toString())
-              .withLabel("Compression Type"));
-    }
+  public static <T> ReadFiles<T> readFiles(Class<T> recordClass) {
+    return new AutoValue_ThriftIO_ReadFiles.Builder<T>().setRecordClass(recordClass).build();
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -233,41 +117,81 @@ public class ThriftIO {
 
   /** Implementation of {@link #readFiles}. */
   @AutoValue
-  public abstract static class ReadFiles
-      extends PTransform<PCollection<FileIO.ReadableFile>, PCollection<Document>> {
+  public abstract static class ReadFiles<T>
+      extends PTransform<PCollection<FileIO.ReadableFile>, PCollection<T>> {
 
-    abstract Builder toBuilder();
+    abstract Builder<T> toBuilder();
+
+    @Nullable
+    abstract Class<T> getRecordClass();
+
+    @Nullable
+    abstract TProtocolFactory getTProtocol();
+
+    public ReadFiles<T> withProtocol(TProtocolFactory protocol) {
+      return toBuilder().setTProtocol(protocol).build();
+    }
 
     @Override
-    public PCollection<Document> expand(PCollection<FileIO.ReadableFile> input) {
-      return input.apply(ParDo.of(new ReadFn()));
+    public PCollection<T> expand(PCollection<FileIO.ReadableFile> input) {
+      checkNotNull(getRecordClass(), "Record class cannot be null");
+      checkNotNull(getTProtocol(), "Thrift protocol cannot be null");
+      final Coder<T> coder = ThriftCoder.of(getRecordClass(), getTProtocol());
+      return input.apply(ParDo.of(new ReadFn<>(getRecordClass(), getTProtocol()))).setCoder(coder);
     }
 
     @AutoValue.Builder
-    abstract static class Builder {
-      abstract ReadFiles build();
+    abstract static class Builder<T> {
+      abstract Builder<T> setRecordClass(Class<T> recordClass);
+
+      abstract Builder<T> setTProtocol(TProtocolFactory tProtocol);
+
+      abstract ReadFiles<T> build();
     }
 
-    /** Reads a {@link FileIO.ReadableFile} and outputs a Thrift {@link Document}. */
-    static class ReadFn extends DoFn<FileIO.ReadableFile, Document> {
+    /**
+     * Reads a {@link FileIO.ReadableFile} and outputs a {@link PCollection} of {@link
+     * #getRecordClass()}.
+     */
+    static class ReadFn<T> extends DoFn<FileIO.ReadableFile, T> {
+
+      final Class<T> tBaseType;
+      final TProtocolFactory tProtocol;
+
+      ReadFn(Class<T> tBaseType, TProtocolFactory tProtocol) {
+        this.tBaseType = tBaseType;
+        this.tProtocol = tProtocol;
+      }
 
       @ProcessElement
       public void processElement(ProcessContext processContext) {
         FileIO.ReadableFile file = processContext.element();
+
         try {
-          Document document =
-              ThriftIdlParser.parseThriftIdl(
-                  ByteSource.wrap(file.readFullyAsBytes()).asCharSource(Charsets.UTF_8));
 
-          processContext.output(document);
+          TBase tb = (TBase) tBaseType.getDeclaredConstructor().newInstance();
+          // TMemoryBuffer buffer = new TMemoryBuffer((int) file.getMetadata().sizeBytes());
+          TDeserializer deserializer = new TDeserializer(tProtocol);
+          deserializer.deserialize(tb, file.readFullyAsBytes());
+          processContext.output((T) tb);
 
-        } catch (IOException ioe) {
+        } catch (Exception ioe) {
 
           String filename = file.getMetadata().resourceId().toString();
           LOG.error(String.format("Error in reading file: %1$s%n%2$s", filename, ioe));
           throw new RuntimeException(ioe);
         }
       }
+    }
+
+    @Override
+    public void populateDisplayData(DisplayData.Builder builder) {
+      super.populateDisplayData(builder);
+      builder.add(
+          DisplayData.item("Thrift class", getRecordClass().toString()).withLabel("Thrift class"));
+      builder.add(
+          DisplayData.item("Thrift Protocol", getTProtocol().toString())
+              .withLabel("Protocol Type"));
     }
   }
 
@@ -284,7 +208,7 @@ public class ThriftIO {
    * <p>Allows users to specify a prefix using {@link Write#withPrefix(String)}, a suffix using
    * {@link Write#withSuffix(String)} and a destination using {@link Write#to(String)}.
    *
-   * <p>If no prefix is provided then {@link Document#hashCode()} will be used to avoid files from
+   * <p>If no prefix is provided then {@link byte[]#hashCode()} will be used to avoid files from
    * colliding.
    *
    * <p>If no suffix is provided then ".thrift" will be used.
@@ -292,7 +216,7 @@ public class ThriftIO {
    * <p>All methods also support {@link ValueProvider}.
    */
   @AutoValue
-  public abstract static class Write extends PTransform<PCollection<Document>, PDone> {
+  public abstract static class Write extends PTransform<PCollection<byte[]>, PDone> {
 
     abstract Builder toBuilder();
 
@@ -306,22 +230,22 @@ public class ThriftIO {
     abstract ValueProvider<String> getDestination();
 
     @Override
-    public PDone expand(PCollection<Document> input) {
+    public PDone expand(PCollection<byte[]> input) {
       checkNotNull(getDestination(), "Destination must not be null.");
 
-      input.apply(
-          FileIO.<Document, Document>writeDynamic()
-              .by(Document::getDocument)
-              .withNaming(
-                  naming ->
-                      FileIO.Write.defaultNaming(
-                          (getPrefix() != null)
-                              ? getPrefix().get()
-                              : String.valueOf(naming.hashCode()),
-                          (getSuffix() != null) ? getSuffix().get() : DEFAULT_THRIFT_SUFFIX))
-              .via(ThriftIO.sink())
-              .to(getDestination())
-              .withDestinationCoder(ThriftCoder.of()));
+      /*input.apply(
+      FileIO.<byte[], byte[]>writeDynamic()
+          .by(byte[]::getbyte[])
+          .withNaming(
+              naming ->
+                  FileIO.Write.defaultNaming(
+                      (getPrefix() != null)
+                          ? getPrefix().get()
+                          : String.valueOf(naming.hashCode()),
+                      (getSuffix() != null) ? getSuffix().get() : DEFAULT_THRIFT_SUFFIX))
+          .via(ThriftIO.sink())
+          .to(getDestination())
+          .withDestinationCoder(ThriftCoder.of()));*/
 
       return PDone.in(input.getPipeline());
     }
@@ -377,331 +301,29 @@ public class ThriftIO {
 
   /** Implementation of {@link #sink}. */
   @AutoValue
-  public abstract static class Sink implements FileIO.Sink<Document> {
+  public abstract static class Sink<T> implements FileIO.Sink<T> {
 
     abstract Builder toBuilder();
 
-    private transient ThriftWriter writer;
-
     @Override
     public void open(WritableByteChannel channel) throws IOException {
-      this.writer = new ThriftWriter(Channels.newOutputStream(channel));
+      // this.writer = new ThriftWriter(Channels.newOutputStream(channel));
     }
 
     @Override
-    public void write(Document element) throws IOException {
-      checkNotNull(writer, "Writer cannot be null");
-      writer.write(element);
+    public void write(T element) throws IOException {
+      // checkNotNull(writer, "Writer cannot be null");
+      // writer.write(element);
     }
 
     @Override
     public void flush() throws IOException {
-      writer.close();
+      // writer.close();
     }
 
     @AutoValue.Builder
     abstract static class Builder {
       abstract Sink build();
-    }
-  }
-
-  /** Class to write Thrift {@link Document}. */
-  private static class ThriftWriter implements Closeable {
-
-    private static final String COMMA_NEW_LINE = "," + System.lineSeparator();
-
-    private transient OutputStream channel;
-
-    ThriftWriter(OutputStream channel) {
-      this.channel = channel;
-    }
-
-    private void write(Document data) throws IOException {
-      Header header = data.getHeader();
-      writeIncludes(header.getIncludes());
-      writeCppIncludes(header.getCppIncludes());
-      writeNamespaces(header.getNamespaces());
-
-      List<Definition> definitions = data.getDefinitions();
-      for (Definition definition : definitions) {
-        if (definition instanceof Typedef) {
-          Typedef typedef = (Typedef) definition;
-          String thriftTypeString = getThriftTypeString(typedef.getType());
-          this.channel.write(
-              String.format(
-                      "typedef %1$s %2$s %3$s%n",
-                      thriftTypeString,
-                      typedef.getName(),
-                      getAnnotationString(typedef.getAnnotations()))
-                  .getBytes(Charset.defaultCharset()));
-        }
-
-        if (definition instanceof Const) {
-          Const constant = (Const) definition;
-          String thriftTypeString = getThriftTypeString(constant.getType());
-          this.channel.write(
-              String.format(
-                      "const %1$s %2$s = %3$s%n",
-                      thriftTypeString, constant.getName(), constant.getValue().getValueString())
-                  .getBytes(Charset.defaultCharset()));
-        }
-
-        if (definition instanceof IntegerEnum) {
-          IntegerEnum integerEnum = (IntegerEnum) definition;
-          String integerEnumFields = getIntegerEnumFieldsString(integerEnum.getFields());
-          String enumAnnotations = getAnnotationString(integerEnum.getAnnotations());
-          this.channel.write(
-              String.format(
-                      "enum %1$s {%n%2$s%n}%3$s%n",
-                      integerEnum.getName(), integerEnumFields, enumAnnotations)
-                  .getBytes(Charset.defaultCharset()));
-        }
-
-        if (definition instanceof StringEnum) {
-          StringEnum stringEnum = (StringEnum) definition;
-          String stringEnumFields = getStringEnumFieldString(stringEnum.getValues());
-          this.channel.write(
-              String.format("senum %1$s {%n%2$s%n}%n", stringEnum.getName(), stringEnumFields)
-                  .getBytes(Charset.defaultCharset()));
-        }
-
-        if (definition instanceof Struct) {
-          Struct struct = (Struct) definition;
-          String structFields =
-              getStructFieldsString(struct.getFields(), ";" + System.lineSeparator(), true);
-          String structAnnotations = getAnnotationString(struct.getAnnotations());
-          this.channel.write(
-              String.format(
-                      "struct %1$s {%n%2$s%n}%3$s%n",
-                      struct.getName(), structFields, structAnnotations)
-                  .getBytes(Charset.defaultCharset()));
-        }
-
-        if (definition instanceof ThriftException) {
-          ThriftException thriftException = (ThriftException) definition;
-          String exceptionFields =
-              getStructFieldsString(thriftException.getFields(), COMMA_NEW_LINE, true);
-          String exceptionAnnotations = getAnnotationString(thriftException.getAnnotations());
-          this.channel.write(
-              String.format(
-                      "exception %1$s {%n%2$s%n}%3$s%n",
-                      thriftException.getName(), exceptionFields, exceptionAnnotations)
-                  .getBytes(Charset.defaultCharset()));
-        }
-
-        if (definition instanceof Service) {
-          Service service = (Service) definition;
-          String parent =
-              service.getParent().isPresent() ? "extends " + service.getParent().get() : "";
-          String methods = getThriftMethodString(service.getMethods());
-          String serviceAnnotations = getAnnotationString(service.getAnnotations().get());
-          this.channel.write(
-              String.format(
-                      "service %1$s %2$s {%n%3$s%n}%4$s%n",
-                      service.getName(), parent, methods, serviceAnnotations)
-                  .getBytes(Charset.defaultCharset()));
-        }
-      }
-    }
-
-    @Override
-    public void close() throws IOException {
-      this.channel.flush();
-      this.channel.close();
-    }
-
-    private void writeIncludes(List<String> includes) throws IOException {
-      if (!includes.isEmpty()) {
-        String includeString =
-            includes.stream()
-                    .map(include -> format("include \"%s\"", include))
-                    .collect(joining(System.lineSeparator()))
-                + System.lineSeparator()
-                + System.lineSeparator();
-        this.channel.write(includeString.getBytes(Charset.defaultCharset()));
-      }
-    }
-
-    private void writeCppIncludes(List<String> includes) throws IOException {
-      if (!includes.isEmpty()) {
-        String includeString =
-            includes.stream()
-                    .map(include -> format("cpp_include \"%s\"", include))
-                    .collect(joining(System.lineSeparator()))
-                + System.lineSeparator()
-                + System.lineSeparator();
-        this.channel.write(includeString.getBytes(Charset.defaultCharset()));
-      }
-    }
-
-    private void writeNamespaces(Map<String, String> namespaces) throws IOException {
-      if (!namespaces.isEmpty()) {
-        String includeString =
-            namespaces.entrySet().stream()
-                    .map(
-                        include ->
-                            format("namespace %1$s %2$s", include.getKey(), include.getValue()))
-                    .collect(joining(System.lineSeparator()))
-                + System.lineSeparator()
-                + System.lineSeparator();
-        this.channel.write(includeString.getBytes(Charset.defaultCharset()));
-      }
-    }
-
-    private String getAnnotationString(List<TypeAnnotation> annotations) {
-      StringBuilder stringBuilder = new StringBuilder();
-      if (!annotations.isEmpty()) {
-        stringBuilder.append(" (");
-        List<String> annotationStringList = new ArrayList<>();
-        for (TypeAnnotation annotation : annotations) {
-          if (annotation.getValue() != null) {
-            annotationStringList.add(annotation.getName() + " = \"" + annotation.getValue() + "\"");
-          } else {
-            annotationStringList.add(annotation.getName());
-          }
-        }
-        stringBuilder.append(String.join(", ", annotationStringList));
-        stringBuilder.append(")");
-      }
-      return stringBuilder.toString();
-    }
-
-    private String getThriftTypeString(ThriftType thriftType) {
-      StringBuilder stringBuilder = new StringBuilder();
-
-      if (thriftType instanceof BaseType) {
-        BaseType baseType = (BaseType) thriftType;
-        stringBuilder.append(baseType.getType().toString().toLowerCase());
-        stringBuilder.append(getAnnotationString(baseType.getAnnotations()));
-
-      } else if (thriftType instanceof ListType) {
-        ListType listType = (ListType) thriftType;
-        String baseTypeString = getThriftTypeString(listType.getElementType());
-        stringBuilder.append(String.format("list<%s>", baseTypeString));
-        stringBuilder.append(getAnnotationString(listType.getAnnotations()));
-
-      } else if (thriftType instanceof IdentifierType) {
-        IdentifierType identifierType = (IdentifierType) thriftType;
-        stringBuilder.append(identifierType.getName());
-
-      } else if (thriftType instanceof VoidType) {
-        stringBuilder.append("void");
-
-      } else if (thriftType instanceof MapType) {
-        MapType mapType = (MapType) thriftType;
-        stringBuilder
-            .append(
-                String.format(
-                    "map<%1$s,%2$s>",
-                    getThriftTypeString(mapType.getKeyType()),
-                    getThriftTypeString(mapType.getValueType())))
-            .append(getAnnotationString(mapType.getAnnotations()));
-      }
-      return stringBuilder.toString();
-    }
-
-    private String getIntegerEnumFieldsString(List<IntegerEnumField> integerEnumFields) {
-
-      List<String> integerEnumFieldList = new ArrayList<>();
-      for (IntegerEnumField field : integerEnumFields) {
-        StringBuilder stringBuilder = new StringBuilder();
-
-        if (field.getExplicitValue().isPresent()) {
-          stringBuilder.append("  ").append(field.getName()).append(" = ").append(field.getValue());
-        } else {
-          stringBuilder.append("  ").append(field.getName());
-        }
-
-        if (field.getAnnotations() != null && !field.getAnnotations().isEmpty()) {
-          stringBuilder.append(getAnnotationString(field.getAnnotations()));
-        }
-
-        integerEnumFieldList.add(stringBuilder.toString());
-      }
-
-      return String.join(COMMA_NEW_LINE, integerEnumFieldList);
-    }
-
-    private String getStructFieldsString(
-        List<ThriftField> structFields, String separator, Boolean indent) {
-
-      List<String> structFieldList = new ArrayList<>();
-
-      for (ThriftField structField : structFields) {
-        StringBuilder stringBuilder = new StringBuilder();
-        if (indent) {
-          stringBuilder.append("  ");
-        }
-        stringBuilder.append(structField.getIdentifier().get()).append(": ");
-        if (structField.getRequiredness().equals(ThriftField.Requiredness.OPTIONAL)) {
-          stringBuilder.append("optional ");
-        } else if (structField.getRequiredness().equals(ThriftField.Requiredness.REQUIRED)) {
-          stringBuilder.append("required ");
-        }
-        stringBuilder
-            .append(getThriftTypeString(structField.getType()))
-            .append(" ")
-            .append(structField.getName());
-        if (structField.getValue().isPresent()) {
-          stringBuilder.append(" = ").append(structField.getValue().get().getValueString());
-        }
-
-        if (structField.getAnnotations() != null && !structField.getAnnotations().isEmpty()) {
-          stringBuilder.append(getAnnotationString(structField.getAnnotations()));
-        }
-        structFieldList.add(stringBuilder.toString());
-      }
-
-      return String.join(separator, structFieldList);
-    }
-
-    private String getStringEnumFieldString(List<String> sEnumFields) {
-      StringBuilder stringBuilder = new StringBuilder();
-      List<String> sEnumFieldList = new ArrayList<>();
-
-      for (String sEnumField : sEnumFields) {
-        sEnumFieldList.add("  \"" + sEnumField + "\"");
-      }
-
-      stringBuilder.append(String.join(COMMA_NEW_LINE, sEnumFieldList));
-
-      return stringBuilder.toString();
-    }
-
-    private String getThriftMethodString(List<ThriftMethod> methods) {
-      List<String> methodsList = new ArrayList<>();
-
-      for (ThriftMethod method : methods) {
-        StringBuilder stringBuilder = new StringBuilder();
-        stringBuilder.append("  ");
-        if (method.isOneway()) {
-          stringBuilder.append("oneway ");
-        }
-        stringBuilder
-            .append(getThriftTypeString(method.getReturnType()))
-            .append(" ")
-            .append(method.getName());
-
-        stringBuilder
-            .append("(")
-            .append(getStructFieldsString(method.getArguments(), ", ", false))
-            .append(")");
-
-        if (!method.getThrowsFields().isEmpty()) {
-          stringBuilder
-              .append(" throws (")
-              .append(getStructFieldsString(method.getThrowsFields(), ",", false))
-              .append(")");
-        }
-
-        if (!method.getAnnotations().isEmpty()) {
-          stringBuilder.append(" ").append(getAnnotationString(method.getAnnotations()));
-        }
-
-        methodsList.add(stringBuilder.toString());
-      }
-
-      return String.join(COMMA_NEW_LINE, methodsList);
     }
   }
 }
