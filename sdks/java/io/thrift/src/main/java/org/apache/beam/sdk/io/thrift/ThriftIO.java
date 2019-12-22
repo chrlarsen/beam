@@ -80,13 +80,11 @@ import org.slf4j.LoggerFactory;
  *
  * <pre>{@code
  * pipeline
- *   .apply(...) // PCollection<byte[]>
+ *   .apply(...) // PCollection<ExampleType>
  *   .apply(FileIO
- *     .<byte[]>write()
+ *     .<ExampleType>write()
  *     .via(ThriftIO.sink()
- *     .to("destination/path")
- *     .withPrefix("unique_name")
- *     .withSuffix(".thrift"));
+ *     .to("destination/path");
  * }</pre>
  *
  * <p>This IO API is considered experimental and may break or receive backwards-incompatible changes
