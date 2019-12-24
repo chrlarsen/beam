@@ -17,10 +17,14 @@
  */
 package org.apache.beam.sdk.io.thrift;
 
+import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions.checkArgument;
 import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions.checkNotNull;
 
 import com.google.auto.value.AutoValue;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
 import javax.annotation.Nullable;
 import org.apache.beam.sdk.annotations.Experimental;
@@ -36,7 +40,10 @@ import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PDone;
 import org.apache.thrift.TBase;
 import org.apache.thrift.TDeserializer;
+import org.apache.thrift.TException;
+import org.apache.thrift.protocol.TProtocol;
 import org.apache.thrift.protocol.TProtocolFactory;
+import org.apache.thrift.transport.TIOStreamTransport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -83,7 +90,7 @@ import org.slf4j.LoggerFactory;
  *   .apply(...) // PCollection<ExampleType>
  *   .apply(FileIO
  *     .<ExampleType>write()
- *     .via(ThriftIO.sink()
+ *     .via(ThriftIO.sink(ThriftProtocol))
  *     .to("destination/path");
  * }</pre>
  *
@@ -99,8 +106,8 @@ public class ThriftIO {
   private ThriftIO() {}
 
   /**
-   * Like {@link #read()},but reads each file in a {@link PCollection} of {@link
-   * org.apache.beam.sdk.io.FileIO.ReadableFile}, which allows more flexible usage.
+   * Reads each file in a {@link PCollection} of {@link org.apache.beam.sdk.io.FileIO.ReadableFile},
+   * which allows more flexible usage.
    */
   public static <T> ReadFiles<T> readFiles(Class<T> recordClass) {
     return new AutoValue_ThriftIO_ReadFiles.Builder<T>().setRecordClass(recordClass).build();
@@ -109,8 +116,8 @@ public class ThriftIO {
   //////////////////////////////////////////////////////////////////////////////
 
   /** Creates a {@link Sink} for use with {@link FileIO#write} and {@link FileIO#writeDynamic}. */
-  public static <T> Sink<T> sink() {
-    return new AutoValue_ThriftIO_Sink.Builder<T>().build();
+  public static <T extends TBase<?, ?>> Sink<T> sink(TProtocolFactory factory) {
+    return new AutoValue_ThriftIO_Sink.Builder<T>().setProtocolFactory(factory).build();
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -136,7 +143,8 @@ public class ThriftIO {
     public PCollection<T> expand(PCollection<FileIO.ReadableFile> input) {
       checkNotNull(getRecordClass(), "Record class cannot be null");
       checkNotNull(getTProtocol(), "Thrift protocol cannot be null");
-      final Coder<T> coder = ThriftCoder.of(getRecordClass(), getTProtocol());
+
+      final Coder<T> coder = ThriftCoder.of();
       return input.apply(ParDo.of(new ReadFn<>(getRecordClass(), getTProtocol()))).setCoder(coder);
     }
 
@@ -303,29 +311,74 @@ public class ThriftIO {
 
   /** Implementation of {@link #sink}. */
   @AutoValue
-  public abstract static class Sink<T> implements FileIO.Sink<T> {
+  public abstract static class Sink<T extends TBase<?, ?>> implements FileIO.Sink<T> {
 
     abstract Builder<T> toBuilder();
 
+    @Nullable
+    abstract TProtocolFactory getProtocolFactory();
+
+    private transient ThriftWriter<T> writer;
+
     @Override
     public void open(WritableByteChannel channel) throws IOException {
-      // this.writer = new ThriftWriter(Channels.newOutputStream(channel));
+      this.writer = new ThriftWriter<>(Channels.newOutputStream(channel), getProtocolFactory());
     }
 
     @Override
     public void write(T element) throws IOException {
-      // checkNotNull(writer, "Writer cannot be null");
-      // writer.write(element);
+      checkNotNull(writer, "Writer cannot be null");
+      writer.write(element);
     }
 
     @Override
     public void flush() throws IOException {
-      // writer.close();
+      writer.close();
     }
 
     @AutoValue.Builder
-    abstract static class Builder<T> {
-      abstract Sink<T> build();
+    abstract static class Builder<T extends TBase<?, ?>> {
+
+      abstract Builder<T> setProtocolFactory(TProtocolFactory protocolFactory);
+
+      abstract TProtocolFactory getProtocolFactory();
+
+      abstract Sink<T> autoBuild();
+
+      public Sink<T> build() {
+        checkArgument(getProtocolFactory() != null, "TProtocol is required.");
+        return autoBuild();
+      }
+    }
+  }
+
+  protected static class ThriftWriter<T extends TBase<?, ?>> {
+    private OutputStream stream;
+    private TProtocolFactory protocolFactory;
+
+    ThriftWriter(OutputStream stream, TProtocolFactory protocolFactory) {
+      this.stream = stream;
+      this.protocolFactory = protocolFactory;
+    }
+
+    public void write(T element) throws IOException {
+      ByteArrayOutputStream baos = new ByteArrayOutputStream();
+      TProtocol protocol = protocolFactory.getProtocol(new TIOStreamTransport(baos));
+
+      try {
+
+        element.write(protocol);
+
+      } catch (TException te) {
+        LOG.error("Error in writing element to TProtocol: " + te);
+        throw new RuntimeException(te);
+      }
+      this.stream.write(baos.toByteArray());
+    }
+
+    public void close() throws IOException {
+      this.stream.flush();
+      this.stream.close();
     }
   }
 }

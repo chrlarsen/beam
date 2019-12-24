@@ -19,19 +19,25 @@ package org.apache.beam.sdk.io.thrift;
 
 import java.io.Serializable;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
+import org.apache.beam.repackaged.core.org.apache.commons.lang3.RandomStringUtils;
+import org.apache.beam.repackaged.core.org.apache.commons.lang3.RandomUtils;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.io.FileIO;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.values.PCollection;
+import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableList;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.io.Resources;
 import org.apache.thrift.protocol.TBinaryProtocol;
 import org.apache.thrift.protocol.TProtocolFactory;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.ExpectedException;
 import org.junit.rules.TemporaryFolder;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -46,69 +52,124 @@ public class ThriftIOTest implements Serializable {
       Resources.getResource(RESOURCE_DIR + "data").getPath();
   private static final String ALL_THRIFT_STRING =
       Resources.getResource(RESOURCE_DIR).getPath() + "*";
-  private final TestThriftStruct tts = new TestThriftStruct();
+  private static final TestThriftStruct TEST_THRIFT_STRUCT = new TestThriftStruct();
+  private static List<TestThriftStruct> testThriftStructs;
+  private final TProtocolFactory tBinaryProtoFactory = new TBinaryProtocol.Factory();
   @Rule public transient TestPipeline mainPipeline = TestPipeline.create();
   @Rule public transient TestPipeline readPipeline = TestPipeline.create();
   @Rule public transient TestPipeline writePipeline = TestPipeline.create();
   @Rule public transient TemporaryFolder temporaryFolder = new TemporaryFolder();
+  @Rule public ExpectedException expectedException = ExpectedException.none();
 
   @Before
   public void setUp() throws Exception {
     byte[] bytes = new byte[10];
     ByteBuffer buffer = ByteBuffer.wrap(bytes);
 
-    tts.testByte = 100;
-    tts.testShort = 200;
-    tts.testInt = 2500;
-    tts.testLong = 79303L;
-    tts.testDouble = 25.007;
-    tts.testBool = true;
-    tts.stringIntMap = new HashMap<>();
-    tts.stringIntMap.put("first", (short) 1);
-    tts.stringIntMap.put("second", (short) 2);
-    tts.testBinary = buffer;
+    TEST_THRIFT_STRUCT.testByte = 100;
+    TEST_THRIFT_STRUCT.testShort = 200;
+    TEST_THRIFT_STRUCT.testInt = 2500;
+    TEST_THRIFT_STRUCT.testLong = 79303L;
+    TEST_THRIFT_STRUCT.testDouble = 25.007;
+    TEST_THRIFT_STRUCT.testBool = true;
+    TEST_THRIFT_STRUCT.stringIntMap = new HashMap<>();
+    TEST_THRIFT_STRUCT.stringIntMap.put("first", (short) 1);
+    TEST_THRIFT_STRUCT.stringIntMap.put("second", (short) 2);
+    TEST_THRIFT_STRUCT.testBinary = buffer;
+
+    testThriftStructs = ImmutableList.copyOf(generateTestObjects(2));
   }
 
-  /** Tests {@link ThriftIO#readFiles(Class)}. */
+  /** Tests {@link ThriftIO#readFiles(Class)} with {@link TBinaryProtocol}. */
   @Test
-  public void testReadFiles() {
-
-    TProtocolFactory proto = new TBinaryProtocol.Factory();
+  public void testReadFilesBinaryProtocol() {
 
     PCollection<TestThriftStruct> testThriftDoc =
         mainPipeline
             .apply(Create.of(ALL_THRIFT_STRING).withCoder(StringUtf8Coder.of()))
             .apply(FileIO.matchAll())
             .apply(FileIO.readMatches())
-            .apply(ThriftIO.readFiles(TestThriftStruct.class).withProtocol(proto));
+            .apply(ThriftIO.readFiles(TestThriftStruct.class).withProtocol(tBinaryProtoFactory));
 
     // Assert
-    PAssert.that(testThriftDoc).containsInAnyOrder(tts);
+    PAssert.that(testThriftDoc).containsInAnyOrder(TEST_THRIFT_STRUCT);
 
     // Execute pipeline
     mainPipeline.run();
   }
 
-  /** Tests {@link ThriftIO#write} which calls {@link ThriftIO#sink()}. */
-  /*
+  /** Tests {@link ThriftIO#sink(TProtocolFactory)} with {@link TBinaryProtocol}. */
   @Test
-  public void testReadWrite() {
-    writePipeline
-        .apply(Create.of(goodDocuments).withCoder(ThriftCoder.of()))
-        .apply(ThriftIO.write().to(temporaryFolder.getRoot().getAbsolutePath()));
+  public void testReadWriteBinaryProtocol() {
+
+    mainPipeline
+        .apply(Create.of(testThriftStructs).withCoder(ThriftCoder.of()))
+        .apply(
+            FileIO.<TestThriftStruct>write()
+                .via(ThriftIO.sink(tBinaryProtoFactory))
+                .to(temporaryFolder.getRoot().getAbsolutePath()));
 
     // Execute write pipeline
-    writePipeline.run().waitUntilFinish();
+    mainPipeline.run().waitUntilFinish();
 
     // Read written files
-    PCollection<Document> readDocs =
-        readPipeline.apply(
-            ThriftIO.read().from(temporaryFolder.getRoot().getAbsolutePath() + "/*"));
+    PCollection<TestThriftStruct> readDocs =
+        readPipeline
+            .apply(
+                Create.of(temporaryFolder.getRoot().getAbsolutePath() + "/*")
+                    .withCoder(StringUtf8Coder.of()))
+            .apply(FileIO.matchAll())
+            .apply(FileIO.readMatches())
+            .apply(ThriftIO.readFiles(TestThriftStruct.class).withProtocol(tBinaryProtoFactory));
 
     // Assert
-    PAssert.that(readDocs).containsInAnyOrder(goodDocuments);
+    PAssert.that(readDocs).containsInAnyOrder(testThriftStructs);
 
     // Execute read pipeline
     readPipeline.run();
+  }
+
+  /**
+   * Tests {@link ThriftIO#sink(TProtocolFactory)} throws {@link IllegalArgumentException} when no
+   * {@link TProtocolFactory} is supplied.
+   */
+  /*@Test
+  public void testSinkNullProto() throws Exception {
+
+    writePipeline
+            .apply(Create.of(TEST_THRIFT_STRUCT).withCoder(ThriftCoder.of()))
+            .apply(FileIO.<TestThriftStruct>write().via(ThriftIO.sink(null)).to(RESOURCE_DIR));
+
+    expectedException.expect(IllegalArgumentException.class);
+
+    // Execute write pipeline
+    writePipeline.run();
   }*/
+
+  private List<TestThriftStruct> generateTestObjects(long count) {
+    List<TestThriftStruct> testThriftStructList = new ArrayList<>();
+
+    for (int i = 0; i < count; i++) {
+      TestThriftStruct temp = new TestThriftStruct();
+      byte[] bytes = RandomUtils.nextBytes(10);
+      ByteBuffer buffer = ByteBuffer.wrap(bytes);
+
+      // Generate random string
+      String randomString = RandomStringUtils.random(10, true, false);
+      short s = (short) RandomUtils.nextInt(0, Short.MAX_VALUE + 1);
+      temp.stringIntMap = new HashMap<>();
+      temp.stringIntMap.put(randomString, s);
+      temp.testShort = s;
+      temp.testBinary = buffer;
+      temp.testBool = RandomUtils.nextBoolean();
+      temp.testByte = (byte) RandomUtils.nextInt(0, Byte.MAX_VALUE + 1);
+      temp.testDouble = RandomUtils.nextDouble();
+      temp.testInt = RandomUtils.nextInt();
+      temp.testLong = RandomUtils.nextLong();
+
+      testThriftStructList.add(temp);
+    }
+
+    return testThriftStructList;
+  }
 }

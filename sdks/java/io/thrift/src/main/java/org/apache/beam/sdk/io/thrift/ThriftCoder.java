@@ -24,20 +24,11 @@ import java.io.ObjectOutputStream;
 import java.io.OutputStream;
 import org.apache.beam.sdk.coders.CoderException;
 import org.apache.beam.sdk.coders.CustomCoder;
-import org.apache.thrift.protocol.TProtocolFactory;
 
 public class ThriftCoder<T> extends CustomCoder<T> {
 
-  private final Class<T> type;
-  private final TProtocolFactory proto;
-
-  public static <T> ThriftCoder<T> of(Class<T> clazz, TProtocolFactory proto) {
-    return new ThriftCoder<>(clazz, proto);
-  }
-
-  private ThriftCoder(Class<T> type, TProtocolFactory proto) {
-    this.type = type;
-    this.proto = proto;
+  public static <T> ThriftCoder<T> of() {
+    return new ThriftCoder<>();
   }
 
   /**
