@@ -25,25 +25,28 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import javax.annotation.Nullable;
 import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.io.FileIO;
-import org.apache.beam.sdk.options.ValueProvider;
-import org.apache.beam.sdk.options.ValueProvider.StaticValueProvider;
+import org.apache.beam.sdk.io.range.OffsetRange;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.display.DisplayData;
+import org.apache.beam.sdk.transforms.splittabledofn.OffsetRangeTracker;
 import org.apache.beam.sdk.values.PCollection;
-import org.apache.beam.sdk.values.PDone;
 import org.apache.thrift.TBase;
 import org.apache.thrift.TDeserializer;
 import org.apache.thrift.TException;
 import org.apache.thrift.protocol.TProtocol;
 import org.apache.thrift.protocol.TProtocolFactory;
+import org.apache.thrift.protocol.TProtocolUtil;
 import org.apache.thrift.transport.TIOStreamTransport;
+import org.apache.thrift.transport.TMemoryBuffer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -172,16 +175,19 @@ public class ThriftIO {
       }
 
       @ProcessElement
-      public void processElement(ProcessContext processContext) {
+      public void processElement(ProcessContext processContext, OffsetRangeTracker tracker) {
         FileIO.ReadableFile file = processContext.element();
 
         try {
 
-          TBase tb = (TBase) tBaseType.getDeclaredConstructor().newInstance();
-          // TMemoryBuffer buffer = new TMemoryBuffer((int) file.getMetadata().sizeBytes());
-          TDeserializer deserializer = new TDeserializer(tProtocol);
-          deserializer.deserialize(tb, file.readFullyAsBytes());
-          processContext.output((T) tb);
+          for (long i = tracker.currentRestriction().getFrom(); tracker.tryClaim(i); ++i) {
+            SeekableByteChannel in = file.openSeekable();
+
+            TBase<?,?> tb = (TBase<?,?>) tBaseType.getDeclaredConstructor().newInstance();
+            TDeserializer deserializer = new TDeserializer(tProtocol);
+            deserializer.deserialize(tb, file.readFullyAsBytes());
+            processContext.output((T) tb);
+          }
 
         } catch (Exception ioe) {
 
@@ -189,6 +195,11 @@ public class ThriftIO {
           LOG.error(String.format("Error in reading file: %1$s%n%2$s", filename, ioe));
           throw new RuntimeException(ioe);
         }
+      }
+
+      @GetInitialRestriction
+      public OffsetRange getInitialRestriction(FileIO.ReadableFile element) {
+        return new OffsetRange(0, element.getMetadata().sizeBytes() - 1);
       }
     }
 
@@ -200,110 +211,6 @@ public class ThriftIO {
       builder.add(
           DisplayData.item("Thrift Protocol", getTProtocol().toString())
               .withLabel("Protocol Type"));
-    }
-  }
-
-  //////////////////////////////////////////////////////////////////////////////
-
-  /** Implementation of {@link Write}. */
-  public static Write write() {
-    return new AutoValue_ThriftIO_Write.Builder().build();
-  }
-
-  /**
-   * A {@link PTransform} for writing Thrift files.
-   *
-   * <p>Allows users to specify a prefix using {@link Write#withPrefix(String)}, a suffix using
-   * {@link Write#withSuffix(String)} and a destination using {@link Write#to(String)}.
-   *
-   * <p>If no prefix is provided then {@link byte[]#hashCode()} will be used to avoid files from
-   * colliding.
-   *
-   * <p>If no suffix is provided then ".thrift" will be used.
-   *
-   * <p>All methods also support {@link ValueProvider}.
-   */
-  @AutoValue
-  public abstract static class Write extends PTransform<PCollection<byte[]>, PDone> {
-
-    abstract Builder toBuilder();
-
-    @Nullable
-    abstract ValueProvider<String> getPrefix();
-
-    @Nullable
-    abstract ValueProvider<String> getSuffix();
-
-    @Nullable
-    abstract ValueProvider<String> getDestination();
-
-    @Override
-    public PDone expand(PCollection<byte[]> input) {
-      checkNotNull(getDestination(), "Destination must not be null.");
-
-      /*input.apply(
-      FileIO.<byte[], byte[]>writeDynamic()
-          .by(byte[]::getbyte[])
-          .withNaming(
-              naming ->
-                  FileIO.Write.defaultNaming(
-                      (getPrefix() != null)
-                          ? getPrefix().get()
-                          : String.valueOf(naming.hashCode()),
-                      (getSuffix() != null) ? getSuffix().get() : DEFAULT_THRIFT_SUFFIX))
-          .via(ThriftIO.sink())
-          .to(getDestination())
-          .withDestinationCoder(ThriftCoder.of()));*/
-
-      return PDone.in(input.getPipeline());
-    }
-
-    @AutoValue.Builder
-    abstract static class Builder {
-      abstract Builder setPrefix(@Nullable ValueProvider<String> prefix);
-
-      abstract Builder setSuffix(@Nullable ValueProvider<String> suffix);
-
-      abstract Builder setDestination(ValueProvider<String> destination);
-
-      abstract Write build();
-    }
-
-    /** Returns a transform for writing Thrift files with the specified prefix. */
-    public Write withPrefix(ValueProvider<String> prefix) {
-      return toBuilder().setPrefix(prefix).build();
-    }
-
-    /** Like {@link Write#withPrefix(ValueProvider)} but allows for a string prefix. */
-    public Write withPrefix(String prefix) {
-      return withPrefix(StaticValueProvider.of(prefix));
-    }
-
-    /** Returns a transform for writing Thrift files with the specified suffix. */
-    public Write withSuffix(ValueProvider<String> suffix) {
-      return toBuilder().setSuffix(suffix).build();
-    }
-
-    /** Like {@link Write#withSuffix(ValueProvider)} but allows for a string suffix. */
-    public Write withSuffix(String suffix) {
-      return withSuffix(StaticValueProvider.of(suffix));
-    }
-
-    /**
-     * Returns a transform for writing Thrift files that writes to the file(s) with the given
-     * filename or filename pattern. This can be any path supported by {@link FileIO}, for example:
-     * a Google Cloud Storage filename or filename pattern of the form {@code
-     * "gs://<bucket>/<filepath>"} (if running locally or using remote execution). Standard <a
-     * href="http://docs.oracle.com/javase/tutorial/essential/io/find.html">Java Filesystem
-     * globpatterns</a> ("*", "?", "[..]") are supported.
-     */
-    public Write to(ValueProvider<String> destination) {
-      return toBuilder().setDestination(destination).build();
-    }
-
-    /** Like {@link Write#to(ValueProvider)} but allows for a string destination. */
-    public Write to(String destination) {
-      return to(StaticValueProvider.of(destination));
     }
   }
 
@@ -352,6 +259,7 @@ public class ThriftIO {
     }
   }
 
+  /** Writer to write Thrift object to {@link OutputStream}. */
   protected static class ThriftWriter<T extends TBase<?, ?>> {
     private OutputStream stream;
     private TProtocolFactory protocolFactory;
