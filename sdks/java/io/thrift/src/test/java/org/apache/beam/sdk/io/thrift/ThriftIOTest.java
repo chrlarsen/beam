@@ -17,9 +17,20 @@
  */
 package org.apache.beam.sdk.io.thrift;
 
+import static org.hamcrest.Matchers.equalTo;
+import static org.junit.Assert.assertThat;
+
+import com.google.gson.Gson;
+import com.google.gson.stream.JsonReader;
+import java.io.File;
+import java.io.IOException;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import org.apache.beam.repackaged.core.org.apache.commons.lang3.RandomStringUtils;
@@ -32,12 +43,16 @@ import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableList;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.io.Resources;
+import org.apache.commons.io.FileUtils;
+import org.apache.commons.io.filefilter.WildcardFileFilter;
 import org.apache.thrift.protocol.TBinaryProtocol;
+import org.apache.thrift.protocol.TCompactProtocol;
+import org.apache.thrift.protocol.TJSONProtocol;
 import org.apache.thrift.protocol.TProtocolFactory;
+import org.apache.thrift.protocol.TSimpleJSONProtocol;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.ExpectedException;
 import org.junit.rules.TemporaryFolder;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -48,18 +63,19 @@ public class ThriftIOTest implements Serializable {
 
   private static final String RESOURCE_DIR = "ThriftIOTest/";
 
-  private static final String THRIFT_STRING =
-      Resources.getResource(RESOURCE_DIR + "data").getPath();
+  private static final String THRIFT_DIR = Resources.getResource(RESOURCE_DIR).getPath();
   private static final String ALL_THRIFT_STRING =
       Resources.getResource(RESOURCE_DIR).getPath() + "*";
   private static final TestThriftStruct TEST_THRIFT_STRUCT = new TestThriftStruct();
   private static List<TestThriftStruct> testThriftStructs;
   private final TProtocolFactory tBinaryProtoFactory = new TBinaryProtocol.Factory();
+  private final TProtocolFactory tJsonProtocolFactory = new TJSONProtocol.Factory();
+  private final TProtocolFactory tSimpleJsonProtocolFactory = new TSimpleJSONProtocol.Factory();
+  private final TProtocolFactory tCompactProtocolFactory = new TCompactProtocol.Factory();
   @Rule public transient TestPipeline mainPipeline = TestPipeline.create();
   @Rule public transient TestPipeline readPipeline = TestPipeline.create();
   @Rule public transient TestPipeline writePipeline = TestPipeline.create();
   @Rule public transient TemporaryFolder temporaryFolder = new TemporaryFolder();
-  @Rule public ExpectedException expectedException = ExpectedException.none();
 
   @Before
   public void setUp() throws Exception {
@@ -77,7 +93,7 @@ public class ThriftIOTest implements Serializable {
     TEST_THRIFT_STRUCT.stringIntMap.put("second", (short) 2);
     TEST_THRIFT_STRUCT.testBinary = buffer;
 
-    testThriftStructs = ImmutableList.copyOf(generateTestObjects(2));
+    testThriftStructs = ImmutableList.copyOf(generateTestObjects(1000L));
   }
 
   /** Tests {@link ThriftIO#readFiles(Class)} with {@link TBinaryProtocol}. */
@@ -86,7 +102,7 @@ public class ThriftIOTest implements Serializable {
 
     PCollection<TestThriftStruct> testThriftDoc =
         mainPipeline
-            .apply(Create.of(ALL_THRIFT_STRING).withCoder(StringUtf8Coder.of()))
+            .apply(Create.of(THRIFT_DIR + "data").withCoder(StringUtf8Coder.of()))
             .apply(FileIO.matchAll())
             .apply(FileIO.readMatches())
             .apply(ThriftIO.readFiles(TestThriftStruct.class).withProtocol(tBinaryProtoFactory));
@@ -98,7 +114,10 @@ public class ThriftIOTest implements Serializable {
     mainPipeline.run();
   }
 
-  /** Tests {@link ThriftIO#sink(TProtocolFactory)} with {@link TBinaryProtocol}. */
+  /**
+   * Tests {@link ThriftIO#sink(TProtocolFactory)} and {@link ThriftIO#readFiles(Class)} with {@link
+   * TBinaryProtocol}.
+   */
   @Test
   public void testReadWriteBinaryProtocol() {
 
@@ -126,25 +145,104 @@ public class ThriftIOTest implements Serializable {
     PAssert.that(readDocs).containsInAnyOrder(testThriftStructs);
 
     // Execute read pipeline
-    readPipeline.run();
+    readPipeline.run().waitUntilFinish();
   }
 
   /**
-   * Tests {@link ThriftIO#sink(TProtocolFactory)} throws {@link IllegalArgumentException} when no
-   * {@link TProtocolFactory} is supplied.
+   * Tests {@link ThriftIO#sink(TProtocolFactory)} and {@link ThriftIO#readFiles(Class)} with {@link
+   * TJSONProtocol}.
    */
-  /*@Test
-  public void testSinkNullProto() throws Exception {
+  @Test
+  public void testReadWriteJsonProtocol() {
 
-    writePipeline
-            .apply(Create.of(TEST_THRIFT_STRUCT).withCoder(ThriftCoder.of()))
-            .apply(FileIO.<TestThriftStruct>write().via(ThriftIO.sink(null)).to(RESOURCE_DIR));
-
-    expectedException.expect(IllegalArgumentException.class);
+    mainPipeline
+        .apply(Create.of(testThriftStructs).withCoder(ThriftCoder.of()))
+        .apply(
+            FileIO.<TestThriftStruct>write()
+                .via(ThriftIO.sink(tJsonProtocolFactory))
+                .to(temporaryFolder.getRoot().getAbsolutePath()));
 
     // Execute write pipeline
-    writePipeline.run();
-  }*/
+    mainPipeline.run().waitUntilFinish();
+
+    // Read written files
+    PCollection<TestThriftStruct> readDocs =
+        readPipeline
+            .apply(
+                Create.of(temporaryFolder.getRoot().getAbsolutePath() + "/*")
+                    .withCoder(StringUtf8Coder.of()))
+            .apply(FileIO.matchAll())
+            .apply(FileIO.readMatches())
+            .apply(ThriftIO.readFiles(TestThriftStruct.class).withProtocol(tJsonProtocolFactory));
+
+    // Assert
+    PAssert.that(readDocs).containsInAnyOrder(testThriftStructs);
+
+    // Execute read pipeline
+    readPipeline.run().waitUntilFinish();
+  }
+
+  /**
+   * Tests {@link ThriftIO#sink(TProtocolFactory)} with {@link
+   * TSimpleJSONProtocol}.
+   */
+  @Test
+  public void testReadWriteSimpleJsonProtocol() throws IOException {
+
+    mainPipeline
+            .apply(Create.of(TEST_THRIFT_STRUCT).withCoder(ThriftCoder.of()))
+            .apply(
+                    FileIO.<TestThriftStruct>write()
+                            .via(ThriftIO.sink(tSimpleJsonProtocolFactory))
+                            .to(temporaryFolder.getRoot().getAbsolutePath()));
+
+    // Execute write pipeline
+    mainPipeline.run().waitUntilFinish();
+
+    Gson gson = new Gson();
+    File dir = new File(temporaryFolder.getRoot().getAbsolutePath());
+    Collection<File> files = FileUtils.listFiles(dir, new WildcardFileFilter("output-*"), null);
+    JsonReader jsonReader =
+            new JsonReader(Files.newBufferedReader(files.iterator().next().toPath(), Charset.defaultCharset()));
+    TestThriftStruct writtenStruct = gson.fromJson(jsonReader, TestThriftStruct.class);
+
+    // Assert
+    assertThat(writtenStruct, equalTo(TEST_THRIFT_STRUCT));
+  }
+
+  /**
+   * Tests {@link ThriftIO#sink(TProtocolFactory)} and {@link ThriftIO#readFiles(Class)} with {@link
+   * TCompactProtocol}.
+   */
+  @Test
+  public void testReadWriteCompactProtocol() {
+
+    mainPipeline
+            .apply(Create.of(testThriftStructs).withCoder(ThriftCoder.of()))
+            .apply(
+                    FileIO.<TestThriftStruct>write()
+                            .via(ThriftIO.sink(tCompactProtocolFactory))
+                            .to(temporaryFolder.getRoot().getAbsolutePath()));
+
+    // Execute write pipeline
+    mainPipeline.run().waitUntilFinish();
+
+    // Read written files
+    PCollection<TestThriftStruct> readDocs =
+            readPipeline
+                    .apply(
+                            Create.of(temporaryFolder.getRoot().getAbsolutePath() + "/*")
+                                    .withCoder(StringUtf8Coder.of()))
+                    .apply(FileIO.matchAll())
+                    .apply(FileIO.readMatches())
+                    .apply(ThriftIO.readFiles(TestThriftStruct.class).withProtocol(tCompactProtocolFactory));
+
+    // Assert
+    PAssert.that(readDocs).containsInAnyOrder(testThriftStructs);
+
+    // Execute read pipeline
+    readPipeline.run().waitUntilFinish();
+  }
 
   private List<TestThriftStruct> generateTestObjects(long count) {
     List<TestThriftStruct> testThriftStructList = new ArrayList<>();

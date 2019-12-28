@@ -23,30 +23,26 @@ import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Prec
 import com.google.auto.value.AutoValue;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.channels.Channels;
-import java.nio.channels.ReadableByteChannel;
-import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import javax.annotation.Nullable;
 import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.io.FileIO;
-import org.apache.beam.sdk.io.range.OffsetRange;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.display.DisplayData;
-import org.apache.beam.sdk.transforms.splittabledofn.OffsetRangeTracker;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.thrift.TBase;
-import org.apache.thrift.TDeserializer;
 import org.apache.thrift.TException;
 import org.apache.thrift.protocol.TProtocol;
 import org.apache.thrift.protocol.TProtocolFactory;
-import org.apache.thrift.protocol.TProtocolUtil;
+import org.apache.thrift.protocol.TSimpleJSONProtocol;
 import org.apache.thrift.transport.TIOStreamTransport;
-import org.apache.thrift.transport.TMemoryBuffer;
+import org.apache.thrift.transport.TTransportException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -79,12 +75,9 @@ import org.slf4j.LoggerFactory;
  *
  * <h3>Writing Thrift Files</h3>
  *
- * <p>{@link ThriftIO.Sink} allows for a {@link PCollection} of {@link byte[]} to be written to
+ * <p>{@link ThriftIO.Sink} allows for a {@link PCollection} of {@link TBase} to be written to
  * Thrift files. It can be used with the general-purpose {@link FileIO} transforms with
  * FileIO.write/writeDynamic specifically.
- *
- * <p>By default, {@link ThriftIO.Sink} can write multiple {@link byte[]} to a file so it is highly
- * recommended to provide a unique name for each desired file.
  *
  * <p>For example:
  *
@@ -93,7 +86,7 @@ import org.slf4j.LoggerFactory;
  *   .apply(...) // PCollection<ExampleType>
  *   .apply(FileIO
  *     .<ExampleType>write()
- *     .via(ThriftIO.sink(ThriftProtocol))
+ *     .via(ThriftIO.sink(thriftProto))
  *     .to("destination/path");
  * }</pre>
  *
@@ -136,28 +129,35 @@ public class ThriftIO {
     abstract Class<T> getRecordClass();
 
     @Nullable
-    abstract TProtocolFactory getTProtocol();
+    abstract TProtocolFactory getTProtocolFactory();
 
     public ReadFiles<T> withProtocol(TProtocolFactory protocol) {
-      return toBuilder().setTProtocol(protocol).build();
+      return toBuilder().setTProtocolFactory(protocol).build();
     }
 
     @Override
     public PCollection<T> expand(PCollection<FileIO.ReadableFile> input) {
       checkNotNull(getRecordClass(), "Record class cannot be null");
-      checkNotNull(getTProtocol(), "Thrift protocol cannot be null");
+      checkNotNull(getTProtocolFactory(), "Thrift protocol cannot be null");
 
       final Coder<T> coder = ThriftCoder.of();
-      return input.apply(ParDo.of(new ReadFn<>(getRecordClass(), getTProtocol()))).setCoder(coder);
+      return input.apply(ParDo.of(new ReadFn<>(getRecordClass(), getTProtocolFactory()))).setCoder(coder);
     }
 
     @AutoValue.Builder
     abstract static class Builder<T> {
       abstract Builder<T> setRecordClass(Class<T> recordClass);
 
-      abstract Builder<T> setTProtocol(TProtocolFactory tProtocol);
+      abstract TProtocolFactory getTProtocolFactory();
 
-      abstract ReadFiles<T> build();
+      abstract Builder<T> setTProtocolFactory(TProtocolFactory tProtocol);
+
+      abstract ReadFiles<T> autoBuild();
+
+      public ReadFiles<T> build() {
+        checkArgument(getTProtocolFactory() instanceof TSimpleJSONProtocol.Factory, "TSimpleJSONProtocol is a write only protocol.");
+        return autoBuild();
+      }
     }
 
     /**
@@ -175,31 +175,28 @@ public class ThriftIO {
       }
 
       @ProcessElement
-      public void processElement(ProcessContext processContext, OffsetRangeTracker tracker) {
+      public void processElement(ProcessContext processContext) {
         FileIO.ReadableFile file = processContext.element();
 
         try {
 
-          for (long i = tracker.currentRestriction().getFrom(); tracker.tryClaim(i); ++i) {
-            SeekableByteChannel in = file.openSeekable();
+          InputStream inputStream = Channels.newInputStream(file.open());
+          TIOStreamTransport streamTransport = new TIOStreamTransport(inputStream);
+          TProtocol protocol = tProtocol.getProtocol(streamTransport);
 
-            TBase<?,?> tb = (TBase<?,?>) tBaseType.getDeclaredConstructor().newInstance();
-            TDeserializer deserializer = new TDeserializer(tProtocol);
-            deserializer.deserialize(tb, file.readFullyAsBytes());
+          while (true) {
+            TBase<?, ?> tb = (TBase<?, ?>) tBaseType.getDeclaredConstructor().newInstance();
+            tb.read(protocol);
             processContext.output((T) tb);
           }
 
         } catch (Exception ioe) {
-
-          String filename = file.getMetadata().resourceId().toString();
-          LOG.error(String.format("Error in reading file: %1$s%n%2$s", filename, ioe));
-          throw new RuntimeException(ioe);
+          if (ioe.getClass() != TTransportException.class) {
+            String filename = file.getMetadata().resourceId().toString();
+            LOG.error(String.format("Error in reading file: %1$s%n%2$s", filename, ioe));
+            throw new RuntimeException(ioe);
+          }
         }
-      }
-
-      @GetInitialRestriction
-      public OffsetRange getInitialRestriction(FileIO.ReadableFile element) {
-        return new OffsetRange(0, element.getMetadata().sizeBytes() - 1);
       }
     }
 
@@ -209,7 +206,7 @@ public class ThriftIO {
       builder.add(
           DisplayData.item("Thrift class", getRecordClass().toString()).withLabel("Thrift class"));
       builder.add(
-          DisplayData.item("Thrift Protocol", getTProtocol().toString())
+          DisplayData.item("Thrift Protocol", getTProtocolFactory().toString())
               .withLabel("Protocol Type"));
     }
   }
@@ -253,7 +250,7 @@ public class ThriftIO {
       abstract Sink<T> autoBuild();
 
       public Sink<T> build() {
-        checkArgument(getProtocolFactory() != null, "TProtocol is required.");
+        checkArgument(getProtocolFactory() != null, "TProtocol is required for sink.");
         return autoBuild();
       }
     }

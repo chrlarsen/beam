@@ -1,3 +1,5 @@
+// This thrift file is used to generate the TestThriftStruct class.
+
 namespace java test_thrift
 
 struct TestThriftStruct {

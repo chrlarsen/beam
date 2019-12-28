@@ -34,8 +34,8 @@ public class ThriftCoder<T> extends CustomCoder<T> {
   /**
    * Encodes the given value of type {@code T} onto the given output stream.
    *
-   * @param value
-   * @param outStream
+   * @param value {@link org.apache.thrift.TBase} to encode.
+   * @param outStream stream to output encoded value to.
    * @throws IOException if writing to the {@code OutputStream} fails for some reason
    * @throws CoderException if the value could not be encoded for some reason
    */
