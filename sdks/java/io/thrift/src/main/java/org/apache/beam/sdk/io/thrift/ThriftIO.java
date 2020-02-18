@@ -65,6 +65,10 @@ import org.slf4j.LoggerFactory;
  * PCollection<ExampleType> examples = files.apply(ThriftIO.readFiles(ExampleType.class).withProtocol(thriftProto);
  * }</pre>
  *
+ * <h4>Inferring Beam schemas from Thrift encoded files</h4>
+ *
+ * <h4>Inferring Beam schemas from Thrift encoded objects in a PCollection</h4>
+ *
  * <h3>Writing Thrift Files</h3>
  *
  * <p>{@link ThriftIO.Sink} allows for a {@link PCollection} of {@link TBase} to be written to
@@ -280,4 +284,11 @@ public class ThriftIO {
       this.stream.close();
     }
   }
+
+  /** Sets the {@link org.apache.beam.sdk.schemas.Schema} for the PCollection. */
+  /*@Experimental(Kind.SCHEMAS)
+  private static <T> PCollection<T> setBeamSchema(PCollection<T> pc, Class<T> clazz) {
+    Schema beamSchema = ThriftUtils.toBeamSchema(clazz);
+    return pc.setSchema(beamSchema, TypeDescriptor.of(clazz),);
+  }*/
 }

@@ -17,6 +17,8 @@
  */
 package org.apache.beam.sdk.io.thrift;
 
+import static org.junit.Assert.assertEquals;
+
 import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -26,6 +28,8 @@ import org.apache.beam.repackaged.core.org.apache.commons.lang3.RandomStringUtil
 import org.apache.beam.repackaged.core.org.apache.commons.lang3.RandomUtils;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.io.FileIO;
+import org.apache.beam.sdk.schemas.Schema;
+import org.apache.beam.sdk.schemas.Schema.Field;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.transforms.Create;
@@ -60,6 +64,7 @@ public class ThriftIOTest implements Serializable {
   private final TProtocolFactory tJsonProtocolFactory = new TJSONProtocol.Factory();
   private final TProtocolFactory tSimpleJsonProtocolFactory = new TSimpleJSONProtocol.Factory();
   private final TProtocolFactory tCompactProtocolFactory = new TCompactProtocol.Factory();
+  private final List<Schema.Field> schemaFields = new ArrayList<>();
   @Rule public transient TestPipeline mainPipeline = TestPipeline.create();
   @Rule public transient TestPipeline readPipeline = TestPipeline.create();
   @Rule public transient TestPipeline writePipeline = TestPipeline.create();
@@ -225,6 +230,28 @@ public class ThriftIOTest implements Serializable {
 
     // Execute pipeline
     mainPipeline.run().waitUntilFinish();
+  }
+
+  /*@Test
+  public void testThriftFieldValueTypeSupplier() {
+    ThriftUtils.ThriftRecordSchema schema = new ThriftUtils.ThriftRecordSchema().toRowFunction(TypeDescriptor.of(TestThriftStruct.class));
+  }*/
+
+  @Test
+  public void testToBeamSchema() {
+    Schema validSchema =
+        Schema.builder()
+            .addByteField("testByte")
+            .addInt16Field("testShort")
+            .addInt32Field("testInt")
+            .addInt64Field("testLong")
+            .addDoubleField("testDouble")
+            .addMapField("stringIntMap", Schema.FieldType.STRING, Schema.FieldType.INT16)
+            .addByteArrayField("testBinary")
+            .addBooleanField("testBool")
+            .build();
+    Schema schema = ThriftUtils.toBeamSchema(TestThriftStruct.class);
+    assertEquals(validSchema, schema);
   }
 
   private List<TestThriftStruct> generateTestObjects(long count) {
