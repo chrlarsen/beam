@@ -229,6 +229,26 @@ public class ThriftIOTest implements Serializable {
     mainPipeline.run().waitUntilFinish();
   }
 
+  /** Tests {@link ThriftIO#readFiles(Class)} with inferring beam schema. */
+  @Test
+  public void testInferBeamSql() {
+    PCollection<TestThriftStruct> testThriftDoc =
+        mainPipeline
+            .apply(Create.of(THRIFT_DIR + "data").withCoder(StringUtf8Coder.of()))
+            .apply(FileIO.matchAll())
+            .apply(FileIO.readMatches())
+            .apply(
+                ThriftIO.readFiles(TestThriftStruct.class)
+                    .withProtocol(tBinaryProtoFactory)
+                    .withBeamSchemas(true));
+
+    // Assert
+    PAssert.that(testThriftDoc).containsInAnyOrder(TEST_THRIFT_STRUCT);
+
+    // Execute pipeline
+    mainPipeline.run();
+  }
+
   private List<TestThriftStruct> generateTestObjects(long count) {
     List<TestThriftStruct> testThriftStructList = new ArrayList<>();
 

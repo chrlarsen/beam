@@ -31,11 +31,13 @@ import java.nio.channels.WritableByteChannel;
 import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.annotations.Experimental.Kind;
 import org.apache.beam.sdk.io.FileIO;
+import org.apache.beam.sdk.schemas.Schema;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.values.PCollection;
+import org.apache.beam.sdk.values.TypeDescriptor;
 import org.apache.thrift.TBase;
 import org.apache.thrift.TException;
 import org.apache.thrift.protocol.TProtocol;
@@ -50,7 +52,7 @@ import org.slf4j.LoggerFactory;
 /**
  * {@link PTransform}s for reading and writing files containing Thrift encoded data.
  *
- * <h3>Reading Thrift Files</h3>
+ * <h2>Reading Thrift Files</h2>
  *
  * <p>For reading each file in a {@link PCollection} of {@link FileIO.ReadableFile}, use the {@link
  * ThriftIO#readFiles(Class)} transform.
@@ -65,7 +67,18 @@ import org.slf4j.LoggerFactory;
  * PCollection<ExampleType> examples = files.apply(ThriftIO.readFiles(ExampleType.class).withProtocol(thriftProto);
  * }</pre>
  *
- * <h3>Writing Thrift Files</h3>
+ * <h3>Inferring Beam schemas from Thrift files</h3>
+ *
+ * <p>If you want to use SQL or schema based operations on an Thrift-based PCollection, you must
+ * configure the read transform to infer the Beam schema and automatically setup the Beam related
+ * coders by doing:
+ *
+ * <pre>{@code
+ * PCollection<AvroAutoGenClass> records =
+ *     p.apply(ThriftIO.readFiles(...).from(...).withBeamSchemas(true);
+ * }</pre>
+ *
+ * <h2>Writing Thrift Files</h2>
  *
  * <p>{@link ThriftIO.Sink} allows for a {@link PCollection} of {@link TBase} to be written to
  * Thrift files. It can be used with the general-purpose {@link FileIO} transforms with
@@ -101,7 +114,10 @@ public class ThriftIO {
    * which allows more flexible usage.
    */
   public static <T> ReadFiles<T> readFiles(Class<T> recordClass) {
-    return new AutoValue_ThriftIO_ReadFiles.Builder<T>().setRecordClass(recordClass).build();
+    return new AutoValue_ThriftIO_ReadFiles.Builder<T>()
+        .setRecordClass(recordClass)
+        .setInferBeamSchema(false)
+        .build();
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -124,6 +140,10 @@ public class ThriftIO {
 
     abstract @Nullable TProtocolFactory getTProtocolFactory();
 
+    abstract @Nullable Schema getSchema();
+
+    abstract boolean getInferBeamSchema();
+
     /**
      * Specifies the {@link TProtocolFactory} to be used to decode Thrift objects.
      *
@@ -139,14 +159,29 @@ public class ThriftIO {
       return toBuilder().setTProtocolFactory(protocol).build();
     }
 
+    /**
+     * If set to true, a Beam schema will be inferred from the Thrift schema using {@link
+     * ThriftSchema#provider()}. This allows the output to be used by SQL and by the
+     * schema-transform library.
+     *
+     * <p>If the Thrift class contains custom typedefs use {@link ThriftSchema#custom()} and
+     * register the schema.
+     */
+    @Experimental(Kind.SCHEMAS)
+    public ReadFiles<T> withBeamSchemas(boolean withBeamSchemas) {
+      return toBuilder().setInferBeamSchema(withBeamSchemas).build();
+    }
+
     @Override
     public PCollection<T> expand(PCollection<FileIO.ReadableFile> input) {
       checkNotNull(getRecordClass(), "Record class cannot be null");
       checkNotNull(getTProtocolFactory(), "Thrift protocol cannot be null");
 
-      return input
-          .apply(ParDo.of(new ReadFn<>(getRecordClass(), getTProtocolFactory())))
-          .setCoder(ThriftCoder.of(getRecordClass(), getTProtocolFactory()));
+      PCollection<T> read =
+          input
+              .apply(ParDo.of(new ReadFn<>(getRecordClass(), getTProtocolFactory())))
+              .setCoder(ThriftCoder.of(getRecordClass(), getTProtocolFactory()));
+      return getInferBeamSchema() ? setBeamSchema(read, getRecordClass()) : read;
     }
 
     @AutoValue.Builder
@@ -156,6 +191,10 @@ public class ThriftIO {
       abstract TProtocolFactory getTProtocolFactory();
 
       abstract Builder<T> setTProtocolFactory(TProtocolFactory tProtocol);
+
+      abstract Builder<T> setInferBeamSchema(boolean infer);
+
+      abstract Builder<T> setSchema(Schema schema);
 
       abstract ReadFiles<T> build();
     }
@@ -200,11 +239,16 @@ public class ThriftIO {
     @Override
     public void populateDisplayData(DisplayData.Builder builder) {
       super.populateDisplayData(builder);
-      builder.add(
-          DisplayData.item("Thrift class", getRecordClass().toString()).withLabel("Thrift class"));
-      builder.add(
-          DisplayData.item("Thrift Protocol", getTProtocolFactory().toString())
-              .withLabel("Protocol Type"));
+      builder
+          .add(
+              DisplayData.item("inferBeamSchema", getInferBeamSchema())
+                  .withLabel("Infer Beam Schema"))
+          .add(
+              DisplayData.item("Thrift class", getRecordClass().toString())
+                  .withLabel("Thrift class"))
+          .add(
+              DisplayData.item("Thrift Protocol", getTProtocolFactory().toString())
+                  .withLabel("Protocol Type"));
     }
   }
 
@@ -279,5 +323,16 @@ public class ThriftIO {
       this.stream.flush();
       this.stream.close();
     }
+  }
+
+  @Experimental(Kind.SCHEMAS)
+  private static <T> PCollection<T> setBeamSchema(PCollection<T> pc, Class<T> clazz) {
+    Schema beamSchema = ThriftUtils.getSchema(clazz);
+    pc.setSchema(
+        beamSchema,
+        TypeDescriptor.of(clazz),
+        ThriftUtils.getToRowFunction(clazz),
+        ThriftUtils.getFromRowFunction(clazz));
+    return pc;
   }
 }
